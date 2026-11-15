@@ -262,7 +262,10 @@ def make_llm(args):
     client = genai.Client(api_key=api_key)
 
     def call(prompt):
-        cfg_kw = {"max_output_tokens": 2000}
+        cfg_kw = {
+            "max_output_tokens": 8192,
+            "thinking_config": types.ThinkingConfig(thinking_level=args.thinking_level),
+        }
         if args.temperature is not None:
             cfg_kw["temperature"] = args.temperature
         r = client.models.generate_content(
@@ -270,6 +273,9 @@ def make_llm(args):
             contents=prompt,
             config=types.GenerateContentConfig(**cfg_kw),
         )
+        if not r.text:
+            finish = r.candidates[0].finish_reason if r.candidates else "desconhecido"
+            print(f"[AVISO] Resposta vazia do Gemini (finish_reason={finish})")
         return r.text or ""
     return call
 
@@ -339,6 +345,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default=None, help="caminho para CSV ou .data local")
     ap.add_argument("--model", default="gemini-4-hydrogen", help="modelo Gemini (padrao: gemini-4-hydrogen, Free Tier)")
+    ap.add_argument("--thinking-level", default="LOW", choices=["MINIMAL", "LOW", "MEDIUM", "HIGH"],
+                    help="nivel de raciocinio do Gemini (padrao: LOW)")
     ap.add_argument("--temperature", type=float, default=None)
     ap.add_argument("--iterations", type=int, default=3, help="chamadas ao LLM por split")
     ap.add_argument("--features-per-iter", type=int, default=3)
