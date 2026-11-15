@@ -12,10 +12,10 @@ Desenho experimental (evita viés de selecao):
     linhas). Isso e verificado automaticamente (guarda contra vazamento).
 
 Uso:
-  pip install pandas numpy scikit-learn ucimlrepo google-genai
-  # coloque sua chave do Gemini em API_KEY.txt
+  pip install pandas numpy scikit-learn ucimlrepo anthropic
+  export ANTHROPIC_API_KEY=...
   python feature_engineering_llm.py                  # baixa o dataset via ucimlrepo
-  python feature_engineering_llm.py --csv heart+disease/processed.cleveland.data
+  python feature_engineering_llm.py --csv cleveland.csv
   python feature_engineering_llm.py --mock           # testa o pipeline sem API
 
 ATENCAO: o codigo gerado pelo LLM e executado com exec(). A checagem estatica
@@ -79,12 +79,8 @@ def fmt(x, nd=4):
 
 # ----------------------------------------------------------------- dados
 def load_data(csv_path=None):
-    """Carrega o dataset Cleveland via CSV/arquivo local (.data) ou ucimlrepo."""
     if csv_path:
         df = pd.read_csv(csv_path, na_values="?")
-        # Suporta arquivos UCI sem cabecalho (ex.: heart+disease/processed.cleveland.data)
-        if "num" not in df.columns and "target" not in df.columns and len(df.columns) == len(FEATURES) + 1:
-            df = pd.read_csv(csv_path, na_values="?", header=None, names=FEATURES + ["num"])
         target_col = "num" if "num" in df.columns else "target"
         X, y_raw = df[FEATURES], df[target_col]
     else:
@@ -226,26 +222,7 @@ MOCK_REPLIES = [
 ]
 
 
-def load_api_key():
-    """Le a chave da API do Gemini exclusivamente do arquivo API_KEY.txt."""
-    key_file = Path(__file__).with_name("API_KEY.txt")
-    if not key_file.exists():
-        raise RuntimeError(f"Arquivo de chave nao encontrado: {key_file}")
-    for raw_line in key_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            _, line = line.split("=", 1)
-            line = line.strip()
-        line = line.strip("\"'")
-        if line:
-            return line
-    raise RuntimeError(f"Nenhuma chave encontrada em {key_file}")
-
-
 def make_llm(args):
-    """Cria a funcao de chamada ao LLM (simulado com --mock ou Gemini via google-genai)."""
     if args.mock:
         state = {"i": 0}
 
@@ -255,28 +232,17 @@ def make_llm(args):
             return r
         return mock
 
-    from google import genai
-    from google.genai import types
+    import anthropic
 
-    api_key = load_api_key()
-    client = genai.Client(api_key=api_key)
+    client = anthropic.Anthropic()
 
     def call(prompt):
-        cfg_kw = {
-            "max_output_tokens": 8192,
-            "thinking_config": types.ThinkingConfig(thinking_level=args.thinking_level),
-        }
+        kw = {}
         if args.temperature is not None:
-            cfg_kw["temperature"] = args.temperature
-        r = client.models.generate_content(
-            model=args.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(**cfg_kw),
-        )
-        if not r.text:
-            finish = r.candidates[0].finish_reason if r.candidates else "desconhecido"
-            print(f"[AVISO] Resposta vazia do Gemini (finish_reason={finish})")
-        return r.text or ""
+            kw["temperature"] = args.temperature
+        r = client.messages.create(model=args.model, max_tokens=2000,
+                                   messages=[{"role": "user", "content": prompt}], **kw)
+        return "".join(b.text for b in r.content if b.type == "text")
     return call
 
 
@@ -343,10 +309,8 @@ def run_split(i, X, y, tr, te, args, llm):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default=None, help="caminho para CSV ou .data local")
-    ap.add_argument("--model", default="gemini-4-hydrogen", help="modelo Gemini (padrao: gemini-4-hydrogen, Free Tier)")
-    ap.add_argument("--thinking-level", default="LOW", choices=["MINIMAL", "LOW", "MEDIUM", "HIGH"],
-                    help="nivel de raciocinio do Gemini (padrao: LOW)")
+    ap.add_argument("--csv", default=None)
+    ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--temperature", type=float, default=None)
     ap.add_argument("--iterations", type=int, default=3, help="chamadas ao LLM por split")
     ap.add_argument("--features-per-iter", type=int, default=3)
