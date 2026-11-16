@@ -1,0 +1,33 @@
+You are an expert in data science and feature engineering for tabular machine-learning models.
+
+TASK
+Propose new features that may improve a binary classifier that predicts passenger survival on the Titanic. The classifier is a Random Forest, evaluated with ROC AUC under cross-validation.
+
+DATASET
+<<DATASET>>
+
+COLUMNS
+The DataFrame contains both numeric and string/text columns. Columns marked "categorical" hold category codes or labels, NOT continuous quantities: do not do arithmetic on them as if the numbers had magnitude.
+<<COLUMNS>>
+
+PREVIOUS ATTEMPTS
+Current cross-validated AUC with the accepted features so far: <<CURRENT_AUC>>
+<<HISTORY>>
+Do not repeat features that were already accepted or rejected. Propose different ideas.
+
+REQUIREMENTS
+1. Define exactly one function: def add_features(df): that receives a pandas DataFrame with the columns above and returns a copy of it with new columns added.
+2. Propose at most <<N_FEATURES>> new features. Name every new column with the prefix fe_, and ensure every new feature is numeric (float, int, or 0/1 indicator, not string).
+3. Row-wise only: the value of a feature for a row must depend only on that row's own values. Do NOT use mean, median, std, min, max, quantile, rank, z-score, groupby, scaling, or anything that looks at other rows. Fixed domain thresholds are allowed (for example Age < 12).
+4. The target is not available. Never reference it.
+5. Columns such as Age, Cabin, and Embarked may contain NaN. The code must not crash on NaN (handle missing values safely, e.g. with .notna() or propagating NaN without imputing using statistics from other rows).
+6. Avoid division by zero and never produce infinity.
+7. Use only pandas and numpy (already imported as pd and np). No other imports, no file access, no network access.
+8. Do not modify or drop the original columns.
+9. Treat categorical columns as categories (equality tests, indicator flags), not as quantities.
+10. Put a one-line comment above each feature explaining its domain rationale.
+
+Prefer domain-motivated features (for example family size, fare per person, title/salutation extracted from Name, cabin deck or presence flag, age/sex/class interactions) over arbitrary arithmetic.
+
+OUTPUT FORMAT
+Reply with ONE python code block containing only the import-free function add_features, and nothing else.

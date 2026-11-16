@@ -1,6 +1,6 @@
 """
 Baseline de feature engineering com LLM (estilo CAAFE) no dataset
-Heart Disease (UCI, Cleveland), classificacao binaria.
+Titanic (Titanic-Dataset.csv), classificacao binaria (Survived).
 
 Desenho experimental (evita viés de selecao):
   - Repete N vezes um split externo estratificado (80% dev / 20% teste).
@@ -12,10 +12,10 @@ Desenho experimental (evita viés de selecao):
     linhas). Isso e verificado automaticamente (guarda contra vazamento).
 
 Uso:
-  pip install pandas numpy scikit-learn ucimlrepo anthropic
-  export ANTHROPIC_API_KEY=...
-  python feature_engineering_llm.py                  # baixa o dataset via ucimlrepo
-  python feature_engineering_llm.py --csv cleveland.csv
+  pip install pandas numpy scikit-learn google-genai
+  # coloque sua chave do Gemini em API_KEY.txt
+  python feature_engineering_llm.py                  # usa Titanic-Dataset.csv na pasta
+  python feature_engineering_llm.py --csv outro.csv  # caminho alternativo
   python feature_engineering_llm.py --mock           # testa o pipeline sem API
 
 ATENCAO: o codigo gerado pelo LLM e executado com exec(). A checagem estatica
@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import roc_auc_score
@@ -42,33 +43,29 @@ from sklearn.model_selection import (
     cross_val_score,
 )
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
 warnings.filterwarnings("ignore")
 
-FEATURES = ["age", "sex", "cp", "trestbps", "chol", "fbs", "restecg",
-            "thalach", "exang", "oldpeak", "slope", "ca", "thal"]
+FEATURES = ["Pclass", "Name", "Sex", "Age", "SibSp", "Parch", "Ticket", "Fare", "Cabin", "Embarked"]
 
 DATASET_DESCRIPTION = (
-    "Cleveland Clinic Foundation subset of the UCI Heart Disease dataset: about 303 "
-    "patients, 13 clinical attributes. Target: 1 if angiographic heart disease is "
-    "present, 0 otherwise."
+    "Titanic passenger survival dataset: 891 passengers, 10 attributes "
+    "(demographic, ticket, fare, cabin, and family information). "
+    "Target: 1 if the passenger survived, 0 otherwise."
 )
 
-# Confira estas descricoes/codificacoes na documentacao oficial do UCI.
 COLUMN_DESCRIPTIONS = {
-    "age": "numeric, age in years",
-    "sex": "categorical, 1 = male, 0 = female",
-    "cp": "categorical, chest pain type (1 typical angina, 2 atypical angina, 3 non-anginal pain, 4 asymptomatic)",
-    "trestbps": "numeric, resting blood pressure in mm Hg on admission",
-    "chol": "numeric, serum cholesterol in mg/dl",
-    "fbs": "categorical, fasting blood sugar > 120 mg/dl (1 = true, 0 = false)",
-    "restecg": "categorical, resting ECG (0 normal, 1 ST-T wave abnormality, 2 left ventricular hypertrophy)",
-    "thalach": "numeric, maximum heart rate achieved",
-    "exang": "categorical, exercise-induced angina (1 = yes, 0 = no)",
-    "oldpeak": "numeric, ST depression induced by exercise relative to rest",
-    "slope": "categorical, slope of the peak exercise ST segment (1 upsloping, 2 flat, 3 downsloping)",
-    "ca": "numeric count, number of major vessels (0-3) colored by fluoroscopy; may be NaN",
-    "thal": "categorical, thalassemia (3 normal, 6 fixed defect, 7 reversible defect); may be NaN",
+    "Pclass": "categorical (integer 1, 2, 3), ticket class (1 = 1st/upper, 2 = 2nd/middle, 3 = 3rd/lower)",
+    "Name": "text string, passenger full name including title (e.g., 'Braund, Mr. Owen Harris')",
+    "Sex": "categorical string, passenger sex ('male' or 'female')",
+    "Age": "numeric, age in years (fractional if less than 1); may be NaN (177 missing)",
+    "SibSp": "numeric integer, number of siblings or spouses aboard the Titanic",
+    "Parch": "numeric integer, number of parents or children aboard the Titanic",
+    "Ticket": "text string, ticket number/code (e.g., 'A/5 21171', '347082')",
+    "Fare": "numeric, passenger fare paid",
+    "Cabin": "text string, cabin number (e.g., 'C85'); often NaN (687 missing)",
+    "Embarked": "categorical string, port of embarkation ('C' = Cherbourg, 'Q' = Queenstown, 'S' = Southampton); may be NaN (2 missing)",
 }
 
 
@@ -79,29 +76,27 @@ def fmt(x, nd=4):
 
 # ----------------------------------------------------------------- dados
 def load_data(csv_path=None):
-    if csv_path:
-        df = pd.read_csv(csv_path, na_values="?")
-        target_col = "num" if "num" in df.columns else "target"
-        X, y_raw = df[FEATURES], df[target_col]
-    else:
-        from ucimlrepo import fetch_ucirepo
-
-        ds = fetch_ucirepo(id=45)  # Heart Disease (confira o id no UCI)
-        X, y_raw = ds.data.features[FEATURES], ds.data.targets.iloc[:, 0]
-    y = (y_raw > 0).astype(int)  # 0 = sem doenca; 1..4 = doenca
-    X = X.apply(pd.to_numeric, errors="coerce").reset_index(drop=True)
-    y = y.reset_index(drop=True)
+    """Carrega o dataset Titanic a partir de Titanic-Dataset.csv (ou caminho informado)."""
+    path = Path(csv_path) if csv_path else Path(__file__).with_name("Titanic-Dataset.csv")
+    df = pd.read_csv(path)
+    X = df[FEATURES].copy().reset_index(drop=True)
+    y = df["Survived"].astype(int).reset_index(drop=True)
     print(f"Dataset: {X.shape[0]} linhas, {X.shape[1]} features, "
           f"prevalencia da classe 1 = {fmt(y.mean(), 3)}")
-    if X.shape[0] != 303:
-        print("AVISO: o Cleveland processado tem 303 linhas; confira a fonte dos dados.")
     return X, y
 
 
 # ---------------------------------------------------------------- modelo
 def make_model(seed):
+    prep = ColumnTransformer([
+        ("num", SimpleImputer(strategy="median"), make_column_selector(dtype_include=np.number)),
+        ("cat", Pipeline([
+            ("imp", SimpleImputer(strategy="constant", fill_value="__missing__")),
+            ("ohe", OneHotEncoder(handle_unknown="ignore", max_categories=20, sparse_output=False)),
+        ]), make_column_selector(dtype_exclude=np.number)),
+    ])
     return Pipeline([
-        ("imp", SimpleImputer(strategy="median")),  # dentro do fold: sem vazamento
+        ("prep", prep),  # dentro do fold: sem vazamento
         ("rf", RandomForestClassifier(n_estimators=300, random_state=seed, n_jobs=-1)),
     ])
 
@@ -210,19 +205,38 @@ def build_prompt(n_features, history, current_auc):
 # ------------------------------------------------------------------- LLM
 MOCK_REPLIES = [
     "```python\ndef add_features(df):\n    out = df.copy()\n"
-    "    out['fe_hr_ratio'] = df['thalach'] / (220 - df['age'])\n"
-    "    out['fe_bp_chol'] = df['trestbps'] * df['chol'] / 1000\n"
-    "    out['fe_st_flat_down'] = ((df['slope'] >= 2) & (df['oldpeak'] > 0)).astype(float)\n"
+    "    out['fe_family_size'] = df['SibSp'] + df['Parch'] + 1\n"
+    "    out['fe_fare_per_person'] = df['Fare'] / out['fe_family_size']\n"
+    "    out['fe_has_cabin'] = df['Cabin'].notna().astype(float)\n"
     "    return out\n```",
     "```python\ndef add_features(df):\n    out = df.copy()\n"
-    "    out['fe_chol_z'] = (df['chol'] - df['chol'].mean()) / df['chol'].std()\n"
-    "    out['fe_age_exang'] = df['age'] * df['exang']\n"
+    "    out['fe_fare_z'] = (df['Fare'] - df['Fare'].mean()) / df['Fare'].std()\n"
+    "    out['fe_is_female_upper'] = ((df['Sex'] == 'female') & (df['Pclass'] == 1)).astype(float)\n"
     "    return out\n```",
     "```python\nimport os\ndef add_features(df):\n    return df.copy()\n```",
 ]
 
 
+def load_api_key():
+    """Le a chave da API do Gemini exclusivamente do arquivo API_KEY.txt."""
+    key_file = Path(__file__).with_name("API_KEY.txt")
+    if not key_file.exists():
+        raise RuntimeError(f"Arquivo de chave nao encontrado: {key_file}")
+    for raw_line in key_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            _, line = line.split("=", 1)
+            line = line.strip()
+        line = line.strip("\"'")
+        if line:
+            return line
+    raise RuntimeError(f"Nenhuma chave encontrada em {key_file}")
+
+
 def make_llm(args):
+    """Cria a funcao de chamada ao LLM (simulado com --mock ou Gemini via google-genai)."""
     if args.mock:
         state = {"i": 0}
 
@@ -232,17 +246,28 @@ def make_llm(args):
             return r
         return mock
 
-    import anthropic
+    from google import genai
+    from google.genai import types
 
-    client = anthropic.Anthropic()
+    api_key = load_api_key()
+    client = genai.Client(api_key=api_key)
 
     def call(prompt):
-        kw = {}
+        cfg_kw = {
+            "max_output_tokens": 8192,
+            "thinking_config": types.ThinkingConfig(thinking_level=args.thinking_level),
+        }
         if args.temperature is not None:
-            kw["temperature"] = args.temperature
-        r = client.messages.create(model=args.model, max_tokens=2000,
-                                   messages=[{"role": "user", "content": prompt}], **kw)
-        return "".join(b.text for b in r.content if b.type == "text")
+            cfg_kw["temperature"] = args.temperature
+        r = client.models.generate_content(
+            model=args.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(**cfg_kw),
+        )
+        if not r.text:
+            finish = r.candidates[0].finish_reason if r.candidates else "desconhecido"
+            print(f"[AVISO] Resposta vazia do Gemini (finish_reason={finish})")
+        return r.text or ""
     return call
 
 
@@ -309,8 +334,10 @@ def run_split(i, X, y, tr, te, args, llm):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default=None)
-    ap.add_argument("--model", default="claude-sonnet-5-5")
+    ap.add_argument("--csv", default=None, help="caminho para CSV ou .data local")
+    ap.add_argument("--model", default="gemini-4-hydrogen", help="modelo Gemini (padrao: gemini-4-hydrogen, Free Tier)")
+    ap.add_argument("--thinking-level", default="LOW", choices=["MINIMAL", "LOW", "MEDIUM", "HIGH"],
+                    help="nivel de raciocinio do Gemini (padrao: LOW)")
     ap.add_argument("--temperature", type=float, default=None)
     ap.add_argument("--iterations", type=int, default=3, help="chamadas ao LLM por split")
     ap.add_argument("--features-per-iter", type=int, default=3)
